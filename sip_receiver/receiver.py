@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import logging
 from typing import List
+
+import psycopg2  # optional: used only for a quick startup connectivity check
 
 from fastapi import FastAPI, Response, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from .models import StartCallRequest, StartCallResponse, CallInfo
 from .sessions import SESSIONS
 from .sip_ua import run_sip_uas
+
+LOG = logging.getLogger(__name__)
 
 app = FastAPI(title="SIP/RTP Receiver", version="1.1.0")
 
@@ -80,5 +86,21 @@ def healthz():
 
 @app.on_event("startup")
 async def _start_sip():
+    # Optional early DB connectivity check (fail-fast): uses PG_* env if present.
+    pg_host = os.getenv("PG_HOST")
+    if pg_host:
+        try:
+            conn = psycopg2.connect(
+                host=pg_host,
+                port=int(os.getenv("PG_PORT", "5432")),
+                dbname=os.getenv("PG_DATABASE", "postgres"),
+                user=os.getenv("PG_USER", "postgres"),
+                password=os.getenv("PG_PASSWORD", ""),
+            )
+            conn.close()
+            LOG.info("SIP Receiver DB connectivity OK at startup.")
+        except Exception:
+            LOG.exception("SIP Receiver DB connectivity failed at startup.")
+
     # Run SIP UAS (UDP 5060) alongside the API
     asyncio.create_task(run_sip_uas())

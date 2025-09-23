@@ -1,0 +1,12 @@
+Scripts/
+*.log
+lib/
+__pycache__/
+Include/
+.env
+old/
+.vscode/
+data/
+**/.txt
+pyvenv/
+**/.env

@@ -8,6 +8,7 @@ from typing import Dict, Tuple, Optional
 
 from .sessions import SESSIONS
 from .models import StartCallRequest
+from .db import get_ready_agent_and_assign, mark_call_completed
 
 SIP_IP: str = os.getenv("SIP_BIND_IP", "0.0.0.0")
 SIP_PORT: int = int(os.getenv("SIP_PORT", "5060"))
@@ -15,17 +16,15 @@ ADVERTISE_IP: Optional[str] = os.getenv("ADVERTISE_IP")
 RTP_IP: str = ADVERTISE_IP or os.getenv("RTP_BIND_IP", "0.0.0.0")
 
 
-# ---------- minimal parsing helpers ----------
 def parse_start_line(msg: str) -> Tuple[str, str, str]:
     line = msg.split("\r\n", 1)[0]
-    if line.startswith(("INVITE", "ACK", "BYE")):
+    if line.startswith(("INVITE", "ACK", "BYE", "CANCEL")):  # added CANCEL
         parts = line.split()
         method = parts[0]
         uri = parts[1] if len(parts) > 1 else ""
         ver = parts[2] if len(parts) > 2 else "SIP/2.0"
         return method, uri, ver
     return "", "", ""
-
 
 def parse_headers(msg: str) -> Dict[str, str]:
     hdrs: Dict[str, str] = {}
@@ -112,8 +111,17 @@ class SipUAS(asyncio.DatagramProtocol):
                 self.dialogs[call_id] = Dialog(call_id, from_tag, f"to{int(time.time()*1000)}", addr)
 
             if method == "INVITE":
-                # provisional responses
+                # Always send 100 Trying immediately
                 self._send_response(addr, 100, "Trying", hdrs, to_tag=None)
+
+                # Gate by DB: pick oldest READY agent -> mark INPROGRESS & attach call_id
+                assigned = get_ready_agent_and_assign(call_id)
+                if not assigned:
+                    # No agent available -> reject
+                    self._send_response(addr, 486, "Busy Here", hdrs, to_tag=self.dialogs[call_id].to_tag)
+                    return
+
+                # Agent reserved -> Ringing
                 self._send_response(addr, 180, "Ringing", hdrs, to_tag=self.dialogs[call_id].to_tag)
 
                 async def do_start():
@@ -132,10 +140,30 @@ class SipUAS(asyncio.DatagramProtocol):
                     d.established = True
 
             elif method == "BYE":
-                # stop RTP and confirm
+                # Mark DB as completed, then stop RTP and confirm
+                try:
+                    mark_call_completed(call_id)
+                except Exception:
+                    pass
+                SESSIONS.stop_call(call_id)
+
+                to_tag = self.dialogs.get(call_id).to_tag if call_id in self.dialogs else None
+                self._send_response(addr, 200, "OK", hdrs, to_tag=to_tag)
+                self.dialogs.pop(call_id, None)
+
+            elif method == "CANCEL":
+                # Caller cancelled before/while setting up the dialog.
+                try:
+                    mark_call_completed(call_id)  # flip INPROGRESS -> COMPLETED
+                except Exception:
+                    pass
+
+                # Stop any allocated RTP (if any) and acknowledge the CANCEL
                 SESSIONS.stop_call(call_id)
                 to_tag = self.dialogs.get(call_id).to_tag if call_id in self.dialogs else None
                 self._send_response(addr, 200, "OK", hdrs, to_tag=to_tag)
+
+                # Clear dialog state
                 self.dialogs.pop(call_id, None)
 
             else:
