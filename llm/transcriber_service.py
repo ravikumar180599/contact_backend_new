@@ -1,7 +1,6 @@
 # llm/transcriber_service.py
 import os
 import logging
-import random
 from typing import Optional
 
 import io
@@ -30,8 +29,7 @@ class TranscriberService:
     Thin wrapper around Parakeet (or a stub) that turns audio bytes → text.
 
     For now, `transcribe()` accepts raw audio bytes (e.g., PCM16 from RTP).
-    We'll first try Parakeet. If Parakeet is unreachable or errors, we fall
-    back to a deterministic fake transcript (so the rest of the pipeline keeps working).
+    We call Parakeet and return the text if available; on error or empty result we return "".
     """
 
     @staticmethod
@@ -46,17 +44,12 @@ class TranscriberService:
         if not audio_bytes:
             return ""
 
-        # Try Parakeet first
         try:
             text = TranscriberService._call_parakeet(audio_bytes, in_sr=in_sr, target_lang=target_lang)
-
-            if text:
-                return text
+            return text or ""
         except Exception:
-            LOG.exception("Parakeet call failed; falling back to fake transcript.")
-
-        # Fallback: generate a deterministic pseudo transcript
-        return TranscriberService._fake_transcript(audio_bytes)
+            LOG.exception("Parakeet call failed.")
+            return ""
 
     # ------------------------ internal helpers ------------------------
 
@@ -122,44 +115,76 @@ class TranscriberService:
             wf.writeframes(y.tobytes())
         return buf.getvalue()
 
-
     @staticmethod
     def _extract_text(resp: httpx.Response) -> Optional[str]:
         """
-        Try to parse a few likely response shapes:
-        - JSON: {"text": "..."} or {"transcript": "..."}
-        - Plain text body
+        Handle common Parakeet-style response shapes:
+        - {"text": "..."} or {"transcript": "..."}
+        - {"transcription": {"text": "...", ...}}
+        - {"result": {"text": "..."}}
+        - {"results": [{"text": "..."}, ...]}
+        - {"segments": [{"text": "..."}, ...]}
+        - {"data": {"text": "..."}}
+        Also accept plain text responses.
         """
-        # JSON?
         ctype = resp.headers.get("Content-Type", "")
+
         if "application/json" in ctype:
             try:
                 js = resp.json()
-                for key in ("text", "transcript", "result"):
-                    if key in js and isinstance(js[key], str) and js[key].strip():
-                        return js[key].strip()
+
+                # Top-level direct
+                for k in ("text", "transcript"):
+                    v = js.get(k)
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+
+                # transcription object
+                tr = js.get("transcription")
+                if isinstance(tr, dict):
+                    v = tr.get("text")
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+
+                # result object or list
+                res = js.get("result")
+                if isinstance(res, dict):
+                    v = res.get("text")
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+
+                results = js.get("results")
+                if isinstance(results, list):
+                    parts = [r.get("text") for r in results if isinstance(r, dict) and isinstance(r.get("text"), str)]
+                    joined = " ".join(p.strip() for p in parts if p and p.strip())
+                    if joined:
+                        return joined
+
+                # segments list (ASR-style)
+                segs = js.get("segments")
+                if isinstance(segs, list):
+                    parts = [s.get("text") for s in segs if isinstance(s, dict) and isinstance(s.get("text"), str)]
+                    joined = " ".join(p.strip() for p in parts if p and p.strip())
+                    if joined:
+                        return joined
+
+                # data.text
+                data = js.get("data")
+                if isinstance(data, dict):
+                    v = data.get("text")
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+
+                # No usable text found in JSON
+                return None
             except Exception:
                 LOG.debug("Failed to parse Parakeet JSON", exc_info=True)
+                return None
 
-        # Plain text?
+        # Plain text fallback
         try:
             txt = resp.text.strip()
             return txt if txt else None
         except Exception:
             return None
-
-    @staticmethod
-    def _fake_transcript(audio_bytes: bytes, words: int = 12) -> str:
-        """
-        Deterministic fake transcript generator (so tests are repeatable).
-        Seeds RNG with hash of the audio to keep output consistent per chunk.
-        """
-        seed = (sum(audio_bytes[:64]) + len(audio_bytes) * 131) % (2**32)
-        rnd = random.Random(seed)
-        alphabet = "abcdefghijklmnopqrstuvwxyz"
-        out = []
-        for _ in range(words):
-            word_len = rnd.randint(3, 9)
-            word = "".join(alphabet[rnd.randint(0, 25)] for _ in range(word_len))
-            out.append(word)
-        return " ".join(out)
+        

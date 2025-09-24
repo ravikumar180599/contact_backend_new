@@ -53,8 +53,6 @@ async def ingest(call_id: str, request: Request):
     # 1) Transcribe the chunk (PCM16 8 kHz -> text via Parakeet)
     try:
         transcript: str = TranscriberService.transcribe(audio_bytes, in_sr=8000, target_lang="en") or ""
-        if not transcript:
-            LOG.warning("Empty transcript from STT for call_id=%s (bytes=%d)", call_id, len(audio_bytes))
     except Exception as e:
         LOG.exception("Transcription failed for call_id=%s (bytes=%d): %s", call_id, len(audio_bytes), e)
         return Response(
@@ -63,7 +61,14 @@ async def ingest(call_id: str, request: Request):
             headers={"Access-Control-Allow-Origin": "*"},
         )
 
-
+    # If STT returned empty, don't push to WS; just ack the chunk.
+    if not transcript:
+        LOG.info("STT returned empty for call_id=%s (bytes=%d) — skipping WS push.", call_id, len(audio_bytes))
+        return Response(
+            content="",
+            status_code=status.HTTP_204_NO_CONTENT,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
 
     # 2) Look up the WebSocket URL for this call
     ws_url: Optional[str] = get_ws_url_for_call(call_id)

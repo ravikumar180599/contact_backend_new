@@ -13,7 +13,13 @@ from .codec import mulaw_to_pcm16
 RTP_BIND_IP = os.getenv("RTP_BIND_IP", "0.0.0.0")
 RTP_PORT_MIN = int(os.getenv("RTP_PORT_MIN", "11000"))
 RTP_PORT_MAX = int(os.getenv("RTP_PORT_MAX", "12000"))
+
 TRANSCRIBER_BASE_URL = os.getenv("TRANSCRIBER_BASE_URL", "http://localhost:5070")
+# Chunking / buffering (in seconds of PCM16 at session.sample_rate)
+PCM_CHUNK_SEC = float(os.getenv("PCM_CHUNK_SEC", "0.9"))          # target chunk size ~0.9s
+PCM_IDLE_FLUSH_SEC = float(os.getenv("PCM_IDLE_FLUSH_SEC", "0.6")) # flush partial buffer after 0.6s idle
+PCM_MAX_BUFFER_SEC = float(os.getenv("PCM_MAX_BUFFER_SEC", "2.0")) # hard cap to avoid unbounded growth
+
 
 
 # ---------- RTP header parse ----------
@@ -50,7 +56,6 @@ def parse_rtp_header(pkt: bytes) -> Tuple[int, int, int, int, bytes]:
     return pt, seq, ts, ssrc, pkt[idx:]
 
 
-# ---------- In-memory per-call session ----------
 @dataclass
 class CallSession:
     call_id: str
@@ -69,9 +74,15 @@ class CallSession:
     _transport: Optional[asyncio.transports.DatagramTransport] = field(default=None, repr=False)
     _last_chunk_pcm16: bytes = field(default=b"", repr=False)
 
+    # Posting pipeline
     tx_q: asyncio.Queue[bytes] = field(default_factory=lambda: asyncio.Queue(maxsize=100), repr=False)
     tx_task: Optional[asyncio.Task] = field(default=None, repr=False)
 
+    # Chunking/buffering
+    buf: bytearray = field(default_factory=bytearray, repr=False)
+    min_chunk_bytes: int = 0
+    max_buffer_bytes: int = 0
+    flush_task: Optional[asyncio.Task] = field(default=None, repr=False)
 
     def close(self) -> None:
         try:
@@ -110,6 +121,36 @@ async def _tx_loop(session: "CallSession") -> None:
                 pass
             raise
 
+def _flush_buffer(session: "CallSession") -> None:
+    """Move current PCM buffer into tx_q as one chunk and clear it."""
+    if not session.buf:
+        return
+    chunk = bytes(session.buf)
+    session.buf.clear()
+    try:
+        session.tx_q.put_nowait(chunk)
+    except asyncio.QueueFull:
+        # Drop on backpressure
+        pass
+
+
+async def _idle_flush_loop(session: "CallSession") -> None:
+    """Flush partial buffer if we've been idle for PCM_IDLE_FLUSH_SEC."""
+    try:
+        while True:
+            await asyncio.sleep(0.2)
+            if session.last_packet_at is None:
+                continue
+            if session.buf and (time.time() - session.last_packet_at) >= PCM_IDLE_FLUSH_SEC:
+                _flush_buffer(session)
+    except asyncio.CancelledError:
+        # On cancel, best-effort flush remaining buffer
+        try:
+            _flush_buffer(session)
+        except Exception:
+            pass
+        raise
+
 
 # ---------- UDP protocol for RTP ----------
 class RTPProtocol(asyncio.DatagramProtocol):
@@ -142,14 +183,18 @@ class RTPProtocol(asyncio.DatagramProtocol):
         # keep last chunk for observability only (not persisted)
         self.session._last_chunk_pcm16 = pcm
 
-        # enqueue for transcriber
-        try:
-            self.session.tx_q.put_nowait(pcm)
-        except asyncio.QueueFull:
-            # drop oldest or just drop this chunk; keeping it simple: drop
-            pass
+        # Append to buffer
+        self.session.buf.extend(pcm)
 
-
+        # Flush if we reached target chunk size or hard cap
+        if (
+            self.session.min_chunk_bytes > 0
+            and len(self.session.buf) >= self.session.min_chunk_bytes
+        ) or (
+            self.session.max_buffer_bytes > 0
+            and len(self.session.buf) >= self.session.max_buffer_bytes
+        ):
+            _flush_buffer(self.session)
 
 # ---------- Session manager ----------
 class SessionManager:
@@ -200,6 +245,10 @@ class SessionManager:
                 ssrc=req.ssrc,
             )
 
+            # Set buffer thresholds (bytes = seconds * sample_rate * 2 bytes per sample)
+            session.min_chunk_bytes = int(PCM_CHUNK_SEC * session.sample_rate * 2)
+            session.max_buffer_bytes = int(PCM_MAX_BUFFER_SEC * session.sample_rate * 2)
+
             loop = asyncio.get_running_loop()
             transport, _ = await loop.create_datagram_endpoint(
                 lambda: RTPProtocol(session),
@@ -208,8 +257,11 @@ class SessionManager:
             )
             session._transport = transport
             self._sessions[req.call_id] = session
+
             # start background poster to transcriber
             session.tx_task = asyncio.create_task(_tx_loop(session), name=f"tx-{req.call_id}")
+            # start idle flush watcher
+            session.flush_task = asyncio.create_task(_idle_flush_loop(session), name=f"flush-{req.call_id}")
             return session
 
     def stop_call(self, call_id: str) -> None:
@@ -217,12 +269,25 @@ class SessionManager:
         if not sess:
             return
 
-        # stop background TX and flush queue
+        # Final flush of any partial buffer
+        try:
+            _flush_buffer(sess)
+        except Exception:
+            pass
+
+        # stop background tasks and flush queue
+        try:
+            if sess.flush_task:
+                sess.flush_task.cancel()
+        except Exception:
+            pass
+
         try:
             if sess.tx_task:
                 sess.tx_task.cancel()
         except Exception:
             pass
+
         try:
             while not sess.tx_q.empty():
                 sess.tx_q.get_nowait()
