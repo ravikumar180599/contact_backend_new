@@ -1,6 +1,7 @@
 # sip_receiver/receiver.py
 from __future__ import annotations
 
+from urllib.parse import urlparse
 import asyncio
 import os
 import logging
@@ -101,6 +102,17 @@ async def _start_sip():
             LOG.info("SIP Receiver DB connectivity OK at startup.")
         except Exception:
             LOG.exception("SIP Receiver DB connectivity failed at startup.")
+
+    # Validate TRANSCRIBER_BASE_URL (fail-fast)
+    tb = os.getenv("TRANSCRIBER_BASE_URL")
+    if not tb:
+        LOG.error("Missing TRANSCRIBER_BASE_URL env; cannot forward RTP to transcriber.")
+        raise RuntimeError("TRANSCRIBER_BASE_URL is required")
+    parsed = urlparse(tb)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        LOG.error("Invalid TRANSCRIBER_BASE_URL=%r (must be http(s)://host[:port])", tb)
+        raise RuntimeError("Invalid TRANSCRIBER_BASE_URL")
+    LOG.info("Transcriber base URL set to %s", tb)
 
     # Run SIP UAS (UDP 5060) alongside the API
     asyncio.create_task(run_sip_uas())

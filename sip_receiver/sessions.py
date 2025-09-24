@@ -5,43 +5,15 @@ import socket
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple, List
-
+import httpx
 from .models import StartCallRequest
+from .codec import mulaw_to_pcm16
 
 # ===== RTP bind / port-pool config =====
 RTP_BIND_IP = os.getenv("RTP_BIND_IP", "0.0.0.0")
 RTP_PORT_MIN = int(os.getenv("RTP_PORT_MIN", "11000"))
 RTP_PORT_MAX = int(os.getenv("RTP_PORT_MAX", "12000"))
-
-
-# ---------- G.711 µ-law helpers ----------
-def _mulaw_decode_byte(b: int) -> int:
-    b ^= 0xFF
-    sign = b & 0x80
-    exponent = (b >> 4) & 0x07
-    mantissa = b & 0x0F
-    sample = ((mantissa << 4) + 0x08) << (exponent + 3)
-    sample -= 0x84  # 132 bias
-    if sign:
-        sample = -sample
-    # clamp to 16-bit
-    if sample > 32767:
-        return 32767
-    if sample < -32768:
-        return -32768
-    return sample
-
-
-def pcmu_to_pcm16(payload: bytes) -> bytes:
-    """Convert a buffer of G.711 µ-law to 16-bit little-endian PCM."""
-    out = bytearray(len(payload) * 2)
-    j = 0
-    for b in payload:
-        s = _mulaw_decode_byte(b)
-        out[j] = s & 0xFF
-        out[j + 1] = (s >> 8) & 0xFF
-        j += 2
-    return bytes(out)
+TRANSCRIBER_BASE_URL = os.getenv("TRANSCRIBER_BASE_URL", "http://localhost:5070")
 
 
 # ---------- RTP header parse ----------
@@ -97,12 +69,46 @@ class CallSession:
     _transport: Optional[asyncio.transports.DatagramTransport] = field(default=None, repr=False)
     _last_chunk_pcm16: bytes = field(default=b"", repr=False)
 
+    tx_q: asyncio.Queue[bytes] = field(default_factory=lambda: asyncio.Queue(maxsize=100), repr=False)
+    tx_task: Optional[asyncio.Task] = field(default=None, repr=False)
+
+
     def close(self) -> None:
         try:
             if self._transport:
                 self._transport.close()
         except Exception:
             pass
+
+async def _tx_loop(session: "CallSession") -> None:
+    """
+    Drain session.tx_q and POST each PCM16 chunk to the transcriber:
+      POST {TRANSCRIBER_BASE_URL}/ingest/{call_id}
+    """
+    url = f"{TRANSCRIBER_BASE_URL}/ingest/{session.call_id}"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            while True:
+                chunk = await session.tx_q.get()
+                # If you later choose to use a sentinel, handle it here:
+                # if chunk is None: break
+                try:
+                    await client.post(
+                        url,
+                        content=chunk,
+                        headers={"Content-Type": "application/octet-stream"},
+                    )
+                except Exception:
+                    # best-effort; drop on error
+                    pass
+        except asyncio.CancelledError:
+            # Task cancelled: best-effort drain (no posts on cancel)
+            try:
+                while not session.tx_q.empty():
+                    session.tx_q.get_nowait()
+            except Exception:
+                pass
+            raise
 
 
 # ---------- UDP protocol for RTP ----------
@@ -128,13 +134,21 @@ class RTPProtocol(asyncio.DatagramProtocol):
         self.session.last_packet_at = time.time()
 
         if self.session.codec.upper() == "PCMU":
-            pcm = pcmu_to_pcm16(payload)
+            pcm = mulaw_to_pcm16(payload)
         else:
             # extend for other codecs (e.g., PCMA) as needed
             pcm = payload  # not normalized
 
         # keep last chunk for observability only (not persisted)
         self.session._last_chunk_pcm16 = pcm
+
+        # enqueue for transcriber
+        try:
+            self.session.tx_q.put_nowait(pcm)
+        except asyncio.QueueFull:
+            # drop oldest or just drop this chunk; keeping it simple: drop
+            pass
+
 
 
 # ---------- Session manager ----------
@@ -194,17 +208,31 @@ class SessionManager:
             )
             session._transport = transport
             self._sessions[req.call_id] = session
+            # start background poster to transcriber
+            session.tx_task = asyncio.create_task(_tx_loop(session), name=f"tx-{req.call_id}")
             return session
 
     def stop_call(self, call_id: str) -> None:
         sess = self._sessions.pop(call_id, None)
         if not sess:
             return
+
+        # stop background TX and flush queue
+        try:
+            if sess.tx_task:
+                sess.tx_task.cancel()
+        except Exception:
+            pass
+        try:
+            while not sess.tx_q.empty():
+                sess.tx_q.get_nowait()
+        except Exception:
+            pass
+
         try:
             sess.close()
         finally:
             self._allocated_ports.discard(sess.rtp_port)
-
 
 # singleton
 SESSIONS = SessionManager()

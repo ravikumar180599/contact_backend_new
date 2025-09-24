@@ -32,21 +32,33 @@ async def init(agent_id: str = ""):
 
 
     # 1) Check the latest row for this agent_id by created_at
+    # latest = sock_store.get_latest_for_agent(agent_id)  # -> Optional[tuple[str, str]] (status, url)
     latest = sock_store.get_latest_for_agent(agent_id)  # -> Optional[tuple[str, str]] (status, url)
     if latest:
         latest_status, existing_url = latest
         if latest_status in ("READY", "INPROGRESS"):
 
+            # Re-start/ensure WS on the bind host, but return/persist the PUBLIC host.
             try:
-                final_url = await WSSocketManager.create(existing_url, agent_id=agent_id)
-                if final_url != existing_url:
-                    # Port changed (old was occupied). Persist the actual bound URL.
-                    sock_store.add_url(agent_id, final_url)
+                # Keep the same port if possible
+                _, ex_port = _split_ws_host_port(existing_url)
+                bind_host = get_ws_bind_host()
+                requested_url = f"ws://{bind_host}:{ex_port}"
+
+                bound_url = await WSSocketManager.create(requested_url, agent_id=agent_id)
+                _, final_port = _split_ws_host_port(bound_url)
+
+                public_host = get_ws_public_host()
+                public_url = f"ws://{public_host}:{final_port}"
+
+                if public_url != existing_url:
+                    sock_store.add_url(agent_id, public_url)
                 return Response(
-                    content=final_url,
+                    content=public_url,
                     status_code=status.HTTP_200_OK,
                     headers={"Access-Control-Allow-Origin": "*"},
                 )
+
             except Exception:
                 traceback.print_exc()
                 return Response(
@@ -56,18 +68,20 @@ async def init(agent_id: str = ""):
                 )
 
     # 2) No existing URL: create a new one on a free port
-    host = get_ws_host()
+    bind_host = get_ws_bind_host()
     port = get_ws_port()  # candidate; manager will adjust if occupied
-    requested_url = f"ws://{host}:{port}"
+    requested_url = f"ws://{bind_host}:{port}"
 
     try:
-        final_url = await WSSocketManager.create(requested_url, agent_id=agent_id)
-        # Persist the ACTUAL bound URL
-        url_host, url_port = _split_ws_host_port(final_url)
-        sock_store.add(agent_id, url_host, url_port)
+        bound_url = await WSSocketManager.create(requested_url, agent_id=agent_id)
+        # Persist the ACTUAL port, but with PUBLIC host
+        _, url_port = _split_ws_host_port(bound_url)
+        public_host = get_ws_public_host()
+        sock_store.add(agent_id, public_host, url_port)
 
+        public_url = f"ws://{public_host}:{url_port}"
         return Response(
-            content=final_url,
+            content=public_url,
             status_code=status.HTTP_201_CREATED,
             headers={"Access-Control-Allow-Origin": "*"},
         )
@@ -116,14 +130,90 @@ async def send_transcription(req: Request, agent_id: str):
             headers={"Access-Control-Allow-Origin": "*"},
         )
 
-
-def get_ws_host() -> str:
+def _get_agent_id_for_call(call_id: str) -> str | None:
     """
-    Host to bind the per-agent WebSocket server on.
-    Use WS_HOST env if set; defaults to localhost.
+    Resolve the agent_id that handled this call_id (latest row).
     """
-    return os.getenv("WS_HOST", "localhost")
+    sql = """
+    SELECT agent_id
+    FROM call_mapping
+    WHERE call_id = %s
+    ORDER BY updated_at DESC, created_at DESC
+    LIMIT 1;
+    """
+    try:
+        with sock_store.conn.cursor() as cur:
+            cur.execute(sql, (call_id,))
+            row = cur.fetchone()
+            if row and row.get("agent_id"):
+                return row["agent_id"]
+    except Exception:
+        traceback.print_exc()
+    return None
 
+@api.delete("/close/{agent_id}")
+async def close_by_agent(agent_id: str):
+    """
+    Stop (free) the WS server for this agent and mark its latest mapping row as COMPLETED (non-destructive).
+    """
+    try:
+        await WSSocketManager.stop(agent_id)
+        sock_store.mark_latest_completed(agent_id)  # soft-close: keep row, set status=end_time
+
+        return Response(
+            content="closed",
+            status_code=status.HTTP_200_OK,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+    except Exception:
+        traceback.print_exc()
+        return Response(
+            content="failed to close",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+@api.delete("/close/by_call/{call_id}")
+async def close_by_call(call_id: str):
+    """
+    Resolve the agent for this call, stop its WS server, and mark the latest mapping row for this call as COMPLETED (non-destructive).
+    """
+    try:
+        agent_id = _get_agent_id_for_call(call_id)
+        if agent_id:
+            await WSSocketManager.stop(agent_id)
+
+        # Soft-close the most recent mapping row associated with this call_id
+        marked_url = sock_store.mark_latest_completed(call_id)
+
+        if not agent_id and not marked_url:
+            return Response(
+                content="not found",
+                status_code=status.HTTP_404_NOT_FOUND,
+                headers={"Access-Control-Allow-Origin": "*"},
+            )
+
+        return Response(
+            content="closed",
+            status_code=status.HTTP_200_OK,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+    except Exception:
+        traceback.print_exc()
+        return Response(
+            content="failed to close",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+def get_ws_bind_host() -> str:
+    """Interface to bind the WS server on (inside process/container)."""
+    return os.getenv("WS_BIND_HOST", "0.0.0.0")
+
+def get_ws_public_host() -> str:
+    """Host/IP clients will use to connect (persisted in DB)."""
+    # Fallback to bind host if not provided (dev-only).
+    return os.getenv("WS_PUBLIC_HOST", os.getenv("WS_BIND_HOST", "127.0.0.1"))
 
 def get_ws_port() -> int:
     """

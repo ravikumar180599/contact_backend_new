@@ -42,6 +42,22 @@ class SocketStorePg:
 
         self._ensure_table()
 
+    def get_agent_for_call(self, call_id: str) -> Optional[str]:
+        """
+        Return the agent_id that handled the given call_id (latest row), or None.
+        """
+        sql = """
+        SELECT agent_id
+        FROM call_mapping
+        WHERE call_id = %s
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 1;
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(sql, (call_id,))
+            row = cur.fetchone()
+            return row["agent_id"] if row and row.get("agent_id") else None
+
     def _ensure_table(self) -> None:
         """
         Create call_mapping table if it doesn't exist (UUID PK via pgcrypto).
@@ -176,6 +192,36 @@ class SocketStorePg:
             if not row:
                 return None
             return row["agent_status"], row["sock_url"]
+
+    def mark_latest_completed(self, key: str) -> Optional[str]:
+        """
+        Soft-close: mark the most recent mapping row for this key (agent_id or call_id)
+        as COMPLETED, set end_time=now(), and return its sock_url. Does NOT delete.
+        """
+        sql = """
+        WITH latest AS (
+            SELECT id
+            FROM call_mapping
+            WHERE agent_id = %s OR call_id = %s
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT 1
+        )
+        UPDATE call_mapping
+        SET agent_status = 'COMPLETED',
+            end_time = COALESCE(end_time, now()),
+            updated_at = now()
+        WHERE id IN (SELECT id FROM latest)
+        RETURNING sock_url;
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(sql, (key, key))
+            row = cur.fetchone()
+        self.conn.commit()
+        if row and row.get("sock_url"):
+            LOG.info("Marked latest mapping for key=%s as COMPLETED -> %s", key, row["sock_url"])
+            return row["sock_url"]
+        LOG.warning("No mapping found to mark as COMPLETED for key=%s", key)
+        return None
 
 
     def close_open_ws(self, key: str) -> Optional[str]:

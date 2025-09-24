@@ -5,7 +5,7 @@ import re
 import socket
 import time
 from typing import Dict, Tuple, Optional
-
+import httpx
 from .sessions import SESSIONS
 from .models import StartCallRequest
 from .db import get_ready_agent_and_assign, mark_call_completed
@@ -14,6 +14,8 @@ SIP_IP: str = os.getenv("SIP_BIND_IP", "0.0.0.0")
 SIP_PORT: int = int(os.getenv("SIP_PORT", "5060"))
 ADVERTISE_IP: Optional[str] = os.getenv("ADVERTISE_IP")
 RTP_IP: str = ADVERTISE_IP or os.getenv("RTP_BIND_IP", "0.0.0.0")
+SOCKET_BASE_URL: str = os.getenv("SOCKET_BASE_URL", "http://localhost:8002")
+
 
 
 def parse_start_line(msg: str) -> Tuple[str, str, str]:
@@ -65,6 +67,19 @@ def sdp_answer(ip: str, port: int) -> str:
         f"m=audio {port} RTP/AVP 0\r\n"   # PT 0 = PCMU
         "a=rtpmap:0 PCMU/8000/1\r\n"
     )
+
+async def _close_ws_for_call(call_id: str) -> None:
+    """
+    Best-effort call to the socket service to close/free the WS for this call.
+    """
+    url = f"{SOCKET_BASE_URL}/close/by_call/{call_id}"
+    try:
+        timeout = httpx.Timeout(3.0, connect=1.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            await client.delete(url)
+    except Exception:
+        # swallow errors; this is best-effort cleanup
+        pass
 
 
 # ---------- dialog tracking ----------
@@ -146,6 +161,8 @@ class SipUAS(asyncio.DatagramProtocol):
                 except Exception:
                     pass
                 SESSIONS.stop_call(call_id)
+                asyncio.create_task(_close_ws_for_call(call_id))
+
 
                 to_tag = self.dialogs.get(call_id).to_tag if call_id in self.dialogs else None
                 self._send_response(addr, 200, "OK", hdrs, to_tag=to_tag)
@@ -160,6 +177,8 @@ class SipUAS(asyncio.DatagramProtocol):
 
                 # Stop any allocated RTP (if any) and acknowledge the CANCEL
                 SESSIONS.stop_call(call_id)
+                asyncio.create_task(_close_ws_for_call(call_id))
+
                 to_tag = self.dialogs.get(call_id).to_tag if call_id in self.dialogs else None
                 self._send_response(addr, 200, "OK", hdrs, to_tag=to_tag)
 
