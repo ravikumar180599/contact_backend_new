@@ -53,6 +53,7 @@ async def ingest(call_id: str, request: Request):
     # 1) Transcribe the chunk (PCM16 8 kHz -> text via Parakeet)
     try:
         transcript: str = TranscriberService.transcribe(audio_bytes, in_sr=8000, target_lang="en") or ""
+        print(f"Generated transcript: ", transcript)
     except Exception as e:
         LOG.exception("Transcription failed for call_id=%s (bytes=%d): %s", call_id, len(audio_bytes), e)
         return Response(
@@ -63,6 +64,7 @@ async def ingest(call_id: str, request: Request):
 
     # If STT returned empty, don't push to WS; just ack the chunk.
     if not transcript:
+        print(f"No transcript: ", transcript)
         LOG.info("STT returned empty for call_id=%s (bytes=%d) — skipping WS push.", call_id, len(audio_bytes))
         return Response(
             content="",

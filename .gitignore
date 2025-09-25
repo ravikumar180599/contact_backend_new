@@ -5,6 +5,7 @@ __pycache__/
 Include/
 .env
 old/
+_old/
 .vscode/
 data/
 **/.txt

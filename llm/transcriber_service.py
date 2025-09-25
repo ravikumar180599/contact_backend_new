@@ -10,7 +10,7 @@ from scipy.signal import resample_poly
 
 PARAKEET_EXPECT_SR = int(os.getenv("PARAKEET_EXPECT_SR", "16000"))  # Parakeet expects 16kHz WAV
 PARAKEET_TARGET_LANG = os.getenv("PARAKEET_TARGET_LANG", "en")      # translation target
-PARAKEET_TIMEOUT_SEC = float(os.getenv("PARAKEET_TIMEOUT_SEC", "10"))
+PARAKEET_TIMEOUT_SEC = float(os.getenv("PARAKEET_TIMEOUT_SEC", "30"))
 
 
 import httpx

@@ -15,10 +15,11 @@ RTP_PORT_MIN = int(os.getenv("RTP_PORT_MIN", "11000"))
 RTP_PORT_MAX = int(os.getenv("RTP_PORT_MAX", "12000"))
 
 TRANSCRIBER_BASE_URL = os.getenv("TRANSCRIBER_BASE_URL", "http://localhost:5070")
+
 # Chunking / buffering (in seconds of PCM16 at session.sample_rate)
-PCM_CHUNK_SEC = float(os.getenv("PCM_CHUNK_SEC", "0.9"))          # target chunk size ~0.9s
-PCM_IDLE_FLUSH_SEC = float(os.getenv("PCM_IDLE_FLUSH_SEC", "0.6")) # flush partial buffer after 0.6s idle
-PCM_MAX_BUFFER_SEC = float(os.getenv("PCM_MAX_BUFFER_SEC", "2.0")) # hard cap to avoid unbounded growth
+PCM_CHUNK_SEC = float(os.getenv("PCM_CHUNK_SEC", "2.0"))          # target chunk size ~0.9s
+PCM_IDLE_FLUSH_SEC = float(os.getenv("PCM_IDLE_FLUSH_SEC", "1.0")) # flush partial buffer after 0.6s idle
+PCM_MAX_BUFFER_SEC = float(os.getenv("PCM_MAX_BUFFER_SEC", "5.0")) # hard cap to avoid unbounded growth
 
 
 
