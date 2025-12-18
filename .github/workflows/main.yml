@@ -1,0 +1,48 @@
+name: SBOM and Vulnerability Scan
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install CycloneDX and Grype
+        run: |
+          pip install cyclonedx-bom
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM
+        run: |
+          cyclonedx-py \
+            -r requirements.txt \
+            --project-name contact_backend_new \
+            --project-version 1.0.0 \
+            -o bom.json
+
+      - name: Scan SBOM for vulnerabilities
+        run: |
+          grype sbom:bom.json -o json > vulnerabilities.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyclonedx-sbom
+          path: bom.json
+
+      - name: Upload vulnerability report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulnerability-report
+          path: vulnerabilities.json
