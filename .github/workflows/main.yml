@@ -25,7 +25,7 @@ jobs:
 
       - name: Generate SBOM
         run: |
-          cyclonedx-py \
+          cyclonedx-py requirements \
             -r requirements.txt \
             --project-name contact_backend_new \
             --project-version 1.0.0 \
