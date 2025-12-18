@@ -33,7 +33,7 @@ jobs:
 
       # 📤 Dependency-Track upload (SINGLE LINE)
       - name: Upload SBOM to Dependency-Track
-        run: curl -X POST "${{ secrets.DTRACK_URL }}/api/v1/bom" -H "X-Api-Key: ${{ secrets.DTRACK_API_KEY }}" -F "projectName=contact_backend_new" -F "projectVersion=1.0.0" -F "autoCreate=true" -F "bom=@bom.json"
+        run: curl -X POST "${{ secrets.DTRACK_URL }}/api/v1/bom" -H "X-Api-Key:${{ secrets.DTRACK_API_KEY }}" -F "projectName=contact_backend_new" -F "projectVersion=1.0.0" -F "autoCreate=true" -F "bom=@bom.json"
 
       # 📦 Optional: keep artifacts
       - name: Upload SBOM artifact
