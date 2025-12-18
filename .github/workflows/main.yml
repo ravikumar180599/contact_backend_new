@@ -25,11 +25,12 @@ jobs:
 
       - name: Generate SBOM
         run: |
-          cyclonedx-py requirements \
-            -r requirements.txt \
+          cyclonedx-py \
             --project-name contact_backend_new \
             --project-version 1.0.0 \
-            -o bom.json
+            requirements \
+            --input-file requirements.txt \
+            --output bom.json
 
       - name: Scan SBOM for vulnerabilities
         run: |
