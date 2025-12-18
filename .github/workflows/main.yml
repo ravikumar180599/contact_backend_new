@@ -25,11 +25,7 @@ jobs:
 
       # ✅ CORRECT CycloneDX command
       - name: Generate SBOM
-        run: |
-          cyclonedx-py requirements \
-            -i requirements.txt \
-            -o bom.json \
-            --format json
+        run: cyclonedx-py requirements -i requirements.txt -o bom.json
 
       - name: Scan SBOM for vulnerabilities
         run: |
