@@ -20,11 +20,11 @@ jobs:
 
       - name: Install CycloneDX and Grype
         run: |
-          pip install cyclonedx-bom==3.11.0
+          pip install cyclonedx-bom
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
       - name: Generate SBOM
-        run: cyclonedx-py -r requirements.txt -o bom.json
+        run: cyclonedx-py -r -i requirements.txt -o bom.json
 
       - name: Scan SBOM for vulnerabilities
         run: grype sbom:bom.json -o json > vulnerabilities.json
