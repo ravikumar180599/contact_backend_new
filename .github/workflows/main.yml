@@ -23,19 +23,37 @@ jobs:
           pip install cyclonedx-bom
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
+      # ✅ CORRECT CycloneDX command
       - name: Generate SBOM
-        run: cyclonedx-py requirements -i requirements.txt -o bom.json
+        run: |
+          cyclonedx-py requirements \
+            -i requirements.txt \
+            -o bom.json \
+            --format json
 
       - name: Scan SBOM for vulnerabilities
-        run: grype sbom:bom.json -o json > vulnerabilities.json
+        run: |
+          grype sbom:bom.json -o json > vulnerabilities.json
 
-      - name: Upload SBOM
+      # 📤 Upload SBOM to Dependency-Track
+      - name: Upload SBOM to Dependency-Track
+        run: |
+          curl -X POST "${{ secrets.DTRACK_URL }}/api/v1/bom" \
+            -H "X-Api-Key: ${{ secrets.DTRACK_API_KEY }}" \
+            -H "Content-Type: multipart/form-data" \
+            -F "projectName=contact_backend_new" \
+            -F "projectVersion=1.0.0" \
+            -F "autoCreate=true" \
+            -F "bom=@bom.json"
+
+      # 📦 Optional: keep artifacts
+      - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
         with:
           name: cyclonedx-sbom
           path: bom.json
 
-      - name: Upload vulnerability report
+      - name: Upload vulnerability report artifact
         uses: actions/upload-artifact@v4
         with:
           name: vulnerability-report
