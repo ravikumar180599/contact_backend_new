@@ -24,13 +24,7 @@ jobs:
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
       - name: Generate SBOM
-        run: |
-          cyclonedx-py \
-            --project-name contact_backend_new \
-            --project-version 1.0.0 \
-            requirements \
-            --input-file requirements.txt \
-            --output bom.json
+        run: cyclonedx-py --project-name contact_backend_new --project-version 1.0.0 requirements --input-file requirements.txt --output bom.json
 
       - name: Scan SBOM for vulnerabilities
         run: |
