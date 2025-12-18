@@ -24,7 +24,7 @@ jobs:
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
       - name: Generate SBOM
-        run: cyclonedx-py -r -i requirements.txt -o bom.json
+        run: cyclonedx-py requirements -i requirements.txt -o bom.json
 
       - name: Scan SBOM for vulnerabilities
         run: grype sbom:bom.json -o json > vulnerabilities.json
