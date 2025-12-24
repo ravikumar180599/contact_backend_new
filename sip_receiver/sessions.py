@@ -13,7 +13,7 @@ RTP_BIND_IP = os.getenv("RTP_BIND_IP", "0.0.0.0")
 RTP_PORT_MIN = int(os.getenv("RTP_PORT_MIN", "11000"))
 RTP_PORT_MAX = int(os.getenv("RTP_PORT_MAX", "12000"))
 
-
+#added some comments to check the issue
 # ---------- G.711 µ-law helpers ----------
 def _mulaw_decode_byte(b: int) -> int:
     b ^= 0xFF
