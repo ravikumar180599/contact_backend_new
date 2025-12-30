@@ -20,32 +20,51 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install CycloneDX and Grype
+      - name: Install CycloneDX, Grype, and Trivy
         run: |
           pip install cyclonedx-bom
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
 
-      # ✅ CORRECT CycloneDX command
+      # ✅ Generate CycloneDX SBOM
       - name: Generate SBOM
         run: cyclonedx-py requirements -i requirements.txt -o bom.json
 
-      - name: Scan SBOM for vulnerabilities
-        run: |
-          grype sbom:bom.json -o json > vulnerabilities.json
+      # 🔍 Scan SBOM using Grype
+      - name: Scan SBOM with Grype
+        run: grype sbom:bom.json -o json > grype-vulnerabilities.json
 
-      # 📤 Dependency-Track upload (SINGLE LINE)
+      # 🔍 Scan SBOM using Trivy
+      - name: Scan SBOM with Trivy
+        run: trivy sbom bom.json -f json -o trivy-vulnerabilities.json
+
+      # 📤 Optional: Upload SBOM to Dependency-Track
       # - name: Upload SBOM to Dependency-Track
-      # run: curl -X POST "${{ secrets.DTRACK_URL }}/api/v1/bom" -H "X-Api-Key:${{ secrets.DTRACK_API_KEY }}" -F "projectName=contact_backend_new" -F "projectVersion=1.0.0" -F "autoCreate=true" -F "bom=@bom.json"
+      #   run: |
+      #     curl -X POST "${{ secrets.DTRACK_URL }}/api/v1/bom" \
+      #       -H "X-Api-Key:${{ secrets.DTRACK_API_KEY }}" \
+      #       -F "projectName=contact_backend_new" \
+      #       -F "projectVersion=1.0.0" \
+      #       -F "autoCreate=true" \
+      #       -F "bom=@bom.json"
 
-      # 📦 Optional: keep artifacts
+      # 📦 Upload SBOM artifact
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
         with:
           name: cyclonedx-sbom
           path: bom.json
 
-      - name: Upload vulnerability report artifact
+      # 📦 Upload Grype report
+      - name: Upload Grype vulnerability report
         uses: actions/upload-artifact@v4
         with:
-          name: vulnerability-report
-          path: vulnerabilities.json
+          name: grype-vulnerability-report
+          path: grype-vulnerabilities.json
+
+      # 📦 Upload Trivy report
+      - name: Upload Trivy vulnerability report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-vulnerability-report
+          path: trivy-vulnerabilities.json
