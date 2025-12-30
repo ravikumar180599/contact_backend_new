@@ -9,6 +9,8 @@ import websockets
 from ws_socket_manager import WSSocketManager
 from socket_store import SocketStorePg
 
+# what are the options we are getting.....
+
 api = FastAPI()
 sock_store = SocketStorePg()
 
