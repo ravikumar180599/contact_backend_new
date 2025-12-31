@@ -30,23 +30,25 @@ jobs:
       - name: Generate SBOM
         run: cyclonedx-py requirements -i requirements.txt -o bom.json
 
-      # 🔍 Scan SBOM using Grype
-      - name: Scan SBOM with Grype
+      # 🔍 Scan SBOM using Grype (JSON)
+      - name: Scan SBOM with Grype (JSON)
         run: grype sbom:bom.json -o json > grype-vulnerabilities.json
 
-      # 🔍 Scan SBOM using Trivy
-      - name: Scan SBOM with Trivy
-        run: trivy sbom bom.json -f json -o trivy-vulnerabilities.json
+      # 🔍 Scan SBOM using Trivy (JSON for RBVM)
+      - name: Scan SBOM with Trivy (JSON)
+        run: |
+          trivy sbom bom.json \
+            --severity HIGH,CRITICAL \
+            --format json \
+            --output trivy-vulnerabilities.json
 
-      # 📤 Optional: Upload SBOM to Dependency-Track
-      # - name: Upload SBOM to Dependency-Track
-      #   run: |
-      #     curl -X POST "${{ secrets.DTRACK_URL }}/api/v1/bom" \
-      #       -H "X-Api-Key:${{ secrets.DTRACK_API_KEY }}" \
-      #       -F "projectName=contact_backend_new" \
-      #       -F "projectVersion=1.0.0" \
-      #       -F "autoCreate=true" \
-      #       -F "bom=@bom.json"
+      # 🔍 Scan SBOM using Trivy (TABLE for humans)
+      - name: Scan SBOM with Trivy (TABLE)
+        run: |
+          trivy sbom bom.json \
+            --severity HIGH,CRITICAL \
+            --format table \
+            > trivy-vulnerabilities.txt
 
       # 📦 Upload SBOM artifact
       - name: Upload SBOM artifact
@@ -55,16 +57,23 @@ jobs:
           name: cyclonedx-sbom
           path: bom.json
 
-      # 📦 Upload Grype report
+      # 📦 Upload Grype vulnerability report
       - name: Upload Grype vulnerability report
         uses: actions/upload-artifact@v4
         with:
           name: grype-vulnerability-report
           path: grype-vulnerabilities.json
 
-      # 📦 Upload Trivy report
-      - name: Upload Trivy vulnerability report
+      # 📦 Upload Trivy JSON report
+      - name: Upload Trivy vulnerability report (JSON)
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-vulnerability-report
+          name: trivy-vulnerability-report-json
           path: trivy-vulnerabilities.json
+
+      # 📦 Upload Trivy TABLE report
+      - name: Upload Trivy vulnerability report (TABLE)
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-vulnerability-report-table
+          path: trivy-vulnerabilities.txt
